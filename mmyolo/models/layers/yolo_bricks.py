@@ -1,6 +1,6 @@
 # Copyright (c) OpenMMLab. All rights reserved.
 from typing import List, Optional, Sequence, Tuple, Union
-
+import math
 import numpy as np
 import torch
 import torch.nn as nn
@@ -1166,6 +1166,210 @@ class EffectiveSELayer(nn.Module):
         x_se = x.mean((2, 3), keepdim=True)
         x_se = self.fc(x_se)
         return x * self.activate(x_se)
+
+
+@MODELS.register_module()
+class ZFEffectiveSELayer(nn.Module):
+    """Effective Squeeze-Excitation.
+
+    From `CenterMask : Real-Time Anchor-Free Instance Segmentation`
+    arxiv (https://arxiv.org/abs/1911.06667)
+    This code referenced to
+    https://github.com/youngwanLEE/CenterMask/blob/72147e8aae673fcaf4103ee90a6a6b73863e7fa1/maskrcnn_benchmark/modeling/backbone/vovnet.py#L108-L121  # noqa
+
+    Args:
+        channels (int): The input and output channels of this Module.
+        act_cfg (dict): Config dict for activation layer.
+            Defaults to dict(type='HSigmoid').
+    """
+
+    def __init__(self,
+                 channels: int,
+                 act_cfg: ConfigType = dict(type='Hardsigmoid')):
+        super().__init__()
+        assert isinstance(act_cfg, dict)
+        self.fc = ConvModule(channels, channels, 1, act_cfg=act_cfg)
+
+        act_cfg_ = act_cfg.copy()  # type: ignore
+        self.activate = MODELS.build(act_cfg_)
+
+        self.avg_pool = nn.AdaptiveAvgPool2d(1)
+        self.max_pool = nn.AdaptiveMaxPool2d(1)
+
+    def forward(self, x: Tensor) -> Tensor:
+        """Forward process
+         Args:
+             x (Tensor): The input tensor.
+         """
+        avgpool_out = self.fc(self.avg_pool(x))
+        maxpool_out = self.fc(self.max_pool(x))
+        out = x * self.activate(avgpool_out + maxpool_out)
+        return out
+
+
+@MODELS.register_module()
+class ZFMinPoolEffectiveSELayer(nn.Module):
+    """Effective Squeeze-Excitation.
+
+    From `CenterMask : Real-Time Anchor-Free Instance Segmentation`
+    arxiv (https://arxiv.org/abs/1911.06667)
+    This code referenced to
+    https://github.com/youngwanLEE/CenterMask/blob/72147e8aae673fcaf4103ee90a6a6b73863e7fa1/maskrcnn_benchmark/modeling/backbone/vovnet.py#L108-L121  # noqa
+
+    Args:
+        channels (int): The input and output channels of this Module.
+        act_cfg (dict): Config dict for activation layer.
+            Defaults to dict(type='HSigmoid').
+    """
+
+    def __init__(self,
+                 channels: int,
+                 act_cfg: ConfigType = dict(type='Hardsigmoid')):
+        super().__init__()
+        assert isinstance(act_cfg, dict)
+        self.fc = ConvModule(channels, channels, 1, act_cfg=act_cfg)
+
+        act_cfg_ = act_cfg.copy()  # type: ignore
+        self.activate = MODELS.build(act_cfg_)
+
+        self.avg_pool = nn.AdaptiveAvgPool2d(1)
+        self.max_pool = nn.AdaptiveMaxPool2d(1)
+
+    def forward(self, x: Tensor) -> Tensor:
+        """Forward process
+         Args:
+             x (Tensor): The input tensor.
+         """
+        avgpool_out = self.fc(self.avg_pool(x))
+        minpool_out = self.fc(-self.max_pool(-x))
+        out = x * self.activate(avgpool_out + minpool_out)
+        return out
+
+
+@MODELS.register_module()
+class ZFLPEffectiveSELayer(nn.Module):
+    """Effective Squeeze-Excitation.
+
+    From `CenterMask : Real-Time Anchor-Free Instance Segmentation`
+    arxiv (https://arxiv.org/abs/1911.06667)
+    This code referenced to
+    https://github.com/youngwanLEE/CenterMask/blob/72147e8aae673fcaf4103ee90a6a6b73863e7fa1/maskrcnn_benchmark/modeling/backbone/vovnet.py#L108-L121  # noqa
+
+    Args:
+        channels (int): The input and output channels of this Module.
+        act_cfg (dict): Config dict for activation layer.
+            Defaults to dict(type='HSigmoid').
+    """
+
+    def __init__(self,
+                 channels: int,
+                 act_cfg: ConfigType = dict(type='Hardsigmoid'),
+                 kernel_sizes: Union[int, Sequence[int]] = 5):
+        super().__init__()
+        assert isinstance(act_cfg, dict)
+        self.fc = ConvModule(channels, channels, 1, act_cfg=act_cfg)
+
+        act_cfg_ = act_cfg.copy()  # type: ignore
+        self.activate = MODELS.build(act_cfg_)
+
+        self.kernel_sizes = kernel_sizes
+        if isinstance(kernel_sizes, int):
+            self.poolings = nn.LPPool2d(norm_type=1,
+                                        kernel_size=kernel_sizes, stride=1)
+        else:
+            self.poolings = nn.ModuleList([
+                nn.LPPool2d(norm_type=2, kernel_size=ks, stride=1)
+                for ks in kernel_sizes
+            ])
+
+    def forward(self, x: Tensor) -> Tensor:
+        """Forward process
+         Args:
+             x (Tensor): The input tensor.
+         """
+        if isinstance(self.kernel_sizes, int):
+            zero_pad = nn.ZeroPad2d(self.kernel_sizes // 2)
+            lp = self.poolings(zero_pad(x))
+        else:
+            paddings = [(kernel_size // 2) for kernel_size in self.kernel_sizes]
+            z = zip(paddings, self.poolings)
+            lp = torch.cat(
+                [x] + [pooling(nn.ZeroPad2d(padding)(x)) for (padding, pooling) in z], dim=1)
+
+        out = x * self.activate(self.fc(lp))
+        return out
+
+
+@MODELS.register_module()
+class EfficientChannelAttention(nn.Module):
+    """Constructs a ECA module.
+
+    Args:
+        channels: Number of channels in the input tensor
+        b: Hyper-parameter for adaptive kernel size formulation. Default: 1
+        gamma: Hyper-parameter for adaptive kernel size formulation. Default: 2
+    """
+
+    def __init__(self, channels, b=1, gamma=2, act_cfg: ConfigType = dict(type='Hardsigmoid')):
+        super().__init__()
+        self.avg_pool = nn.AdaptiveAvgPool2d(1)
+        self.channels = channels
+        self.b = b
+        self.gamma = gamma
+        self.conv = nn.Conv1d(
+            1,
+            1,
+            kernel_size=self.kernel_size(),
+            padding=(self.kernel_size() - 1) // 2,
+            bias=False,
+        )
+
+        act_cfg_ = act_cfg.copy()  # type: ignore
+        self.activate = MODELS.build(act_cfg_)
+
+    def kernel_size(self):
+        k = int(abs((math.log2(self.channels) / self.gamma) + self.b / self.gamma))
+        out = k if k % 2 else k + 1
+        return out
+
+    def forward(self, x):
+        # feature descriptor on the global spatial information
+        y = self.avg_pool(x)
+
+        # Two different branches of ECA module
+        y = self.conv(y.squeeze(-1).transpose(-1, -2)).transpose(-1, -2).unsqueeze(-1)
+
+        # Multi-scale information fusion
+        y = self.activate(y)
+
+        return x * y.expand_as(x)
+
+
+@MODELS.register_module()
+class RTMDefaultChannelAttention(BaseModule):
+    """Channel attention Module.
+
+    Args:
+        channels (int): The input (and output) channels of the attention layer.
+        init_cfg (dict or list[dict], optional): Initialization config dict.
+            Defaults to None
+    """
+
+    def __init__(self, channels: int, init_cfg: OptMultiConfig = None, act_cfg: ConfigType = dict(type='HSigmoid')) -> None:
+        super().__init__(init_cfg=init_cfg)
+        self.global_avgpool = nn.AdaptiveAvgPool2d(1)
+        self.fc = nn.Conv2d(channels, channels, 1, 1, 0, bias=True)
+
+        act_cfg_ = act_cfg.copy()  # type: ignore
+        self.act = MODELS.build(act_cfg_)
+
+    def forward(self, x: Tensor) -> Tensor:
+        """Forward function for ChannelAttention."""
+        with torch.cuda.amp.autocast(enabled=False):
+            out = self.global_avgpool(x)
+        out = self.fc(out)
+        out = self.act(out)
+        return x * out
 
 
 class PPYOLOESELayer(nn.Module):
