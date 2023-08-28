@@ -2284,8 +2284,7 @@ class CSPLayerWithTwoConv(BaseModule):
             norm_cfg: ConfigType = dict(type='BN', momentum=0.03, eps=0.001),
             act_cfg: ConfigType = dict(type='SiLU', inplace=True),
             init_cfg: OptMultiConfig = None,
-            attention_cfg: OptMultiConfig = dict(
-                type='EffectiveSELayer', act_cfg=dict(type='HSigmoid'))
+            attention_cfg: OptMultiConfig = None
     ) -> None:
         super().__init__(init_cfg=init_cfg)
 
