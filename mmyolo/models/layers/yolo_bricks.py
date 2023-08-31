@@ -9,6 +9,7 @@ from mmcv.cnn import (ConvModule, DepthwiseSeparableConvModule, MaxPool2d,
 from mmdet.models.layers.csp_layer import \
     DarknetBottleneck as MMDET_DarknetBottleneck, CSPNeXtBlock
 from mmdet.utils import ConfigType, OptConfigType, OptMultiConfig
+from mmengine import MessageHub
 from mmengine.model import BaseModule
 from mmengine.utils import digit_version
 from torch import Tensor
@@ -2284,7 +2285,8 @@ class CSPLayerWithTwoConv(BaseModule):
             norm_cfg: ConfigType = dict(type='BN', momentum=0.03, eps=0.001),
             act_cfg: ConfigType = dict(type='SiLU', inplace=True),
             init_cfg: OptMultiConfig = None,
-            attention_cfg: OptMultiConfig = None
+            attention_cfg: OptMultiConfig = None,
+            use_cspnext_block: bool = False
     ) -> None:
         super().__init__(init_cfg=init_cfg)
 
@@ -2292,6 +2294,8 @@ class CSPLayerWithTwoConv(BaseModule):
         # self.spp_cfg = spp_cfg
         assert attention_cfg is None or isinstance(attention_cfg, dict)
         # assert spp_cfg is None or isinstance(spp_cfg, dict)
+
+        block = CSPNeXtBlock if use_cspnext_block else DarknetBottleneck
 
         self.mid_channels = int(out_channels * expand_ratio)
         self.main_conv = ConvModule(
@@ -2310,12 +2314,12 @@ class CSPLayerWithTwoConv(BaseModule):
             act_cfg=act_cfg)
 
         self.blocks = nn.ModuleList(
-            DarknetBottleneck(
+            block(
                 self.mid_channels,
                 self.mid_channels,
                 expansion=1,
-                kernel_size=(3, 3),
-                padding=(1, 1),
+                # kernel_size=(3, 3),
+                # padding=(1, 1),
                 add_identity=add_identity,
                 use_depthwise=False,
                 conv_cfg=conv_cfg,
