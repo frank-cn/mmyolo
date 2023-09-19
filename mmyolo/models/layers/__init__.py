@@ -6,11 +6,12 @@ from .yolo_bricks import (BepC3StageBlock, BiFusion, CSPLayerWithTwoConv,
                           MaxPoolAndStrideConvBlock, PPYOLOEBasicBlock,
                           RepStageBlock, RepVGGBlock, SPPFBottleneck,
                           SPPFCSPBlock, TinyDownSampleBlock)
+from .asff import ASFF
 
 __all__ = [
     'SPPFBottleneck', 'RepVGGBlock', 'RepStageBlock', 'ExpMomentumEMA',
     'ELANBlock', 'MaxPoolAndStrideConvBlock', 'SPPFCSPBlock',
     'PPYOLOEBasicBlock', 'EffectiveSELayer', 'TinyDownSampleBlock',
     'EELANBlock', 'ImplicitA', 'ImplicitM', 'BepC3StageBlock',
-    'CSPLayerWithTwoConv', 'DarknetBottleneck', 'BiFusion'
+    'CSPLayerWithTwoConv', 'DarknetBottleneck', 'BiFusion', 'ASFF'
 ]
