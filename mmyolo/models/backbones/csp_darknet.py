@@ -8,7 +8,7 @@ from mmdet.models.backbones.csp_darknet import CSPLayer, Focus
 from mmdet.utils import ConfigType, OptMultiConfig
 
 from mmyolo.registry import MODELS
-from ..layers import CSPLayerWithTwoConv, SPPFBottleneck
+from ..layers import CSPLayerWithTwoConv, SPPFBottleneck, ASFF
 from ..utils import make_divisible, make_round
 from .base_backbone import BaseBackbone
 
@@ -93,14 +93,19 @@ class YOLOv5CSPDarknet(BaseBackbone):
 
     def build_stem_layer(self) -> nn.Module:
         """Build a stem layer."""
-        return ConvModule(
+        return Focus(
             self.input_channels,
             make_divisible(self.arch_setting[0][0], self.widen_factor),
-            kernel_size=6,
-            stride=2,
-            padding=2,
             norm_cfg=self.norm_cfg,
             act_cfg=self.act_cfg)
+        # return ConvModule(
+        #     self.input_channels,
+        #     make_divisible(self.arch_setting[0][0], self.widen_factor),
+        #     kernel_size=6,
+        #     stride=2,
+        #     padding=2,
+        #     norm_cfg=self.norm_cfg,
+        #     act_cfg=self.act_cfg)
 
     def build_stage_layer(self, stage_idx: int, setting: list) -> list:
         """Build a stage layer.
@@ -115,14 +120,19 @@ class YOLOv5CSPDarknet(BaseBackbone):
         out_channels = make_divisible(out_channels, self.widen_factor)
         num_blocks = make_round(num_blocks, self.deepen_factor)
         stage = []
-        conv_layer = ConvModule(
+        conv_layer = Focus(
             in_channels,
             out_channels,
-            kernel_size=3,
-            stride=2,
-            padding=1,
             norm_cfg=self.norm_cfg,
             act_cfg=self.act_cfg)
+        # conv_layer = ConvModule(
+        #     in_channels,
+        #     out_channels,
+        #     kernel_size=3,
+        #     stride=2,
+        #     padding=1,
+        #     norm_cfg=self.norm_cfg,
+        #     act_cfg=self.act_cfg)
         stage.append(conv_layer)
         csp_layer = CSPLayer(
             out_channels,
@@ -204,9 +214,12 @@ class YOLOv8CSPDarknet(BaseBackbone):
     # in_channels, out_channels, num_blocks, add_identity, use_spp
     # the final out_channels will be set according to the param.
     arch_settings = {
-        'P5': [[64, 128, 3, True, False], [128, 256, 6, True, False],
-               [256, 512, 6, True, False], [512, None, 3, True, True]],
+        'P5': [[64, 128, 3, True, False], [128, 256, 8, True, False],
+               [256, 512, 8, True, False], [512, None, 3, True, True]],
     }
+    # FCA attention
+    fca_dct_settings = [56, 28, 14, 7] # default
+    # fca_dct_settings = [238, 119, 59, 29]
 
     def __init__(self,
                  arch: str = 'P5',
@@ -217,12 +230,32 @@ class YOLOv8CSPDarknet(BaseBackbone):
                  input_channels: int = 3,
                  out_indices: Tuple[int] = (2, 3, 4),
                  frozen_stages: int = -1,
-                 norm_cfg: ConfigType = dict(
-                     type='BN', momentum=0.03, eps=0.001),
-                 act_cfg: ConfigType = dict(type='SiLU', inplace=True),
+                 norm_cfg=None,
+                 act_cfg=None,
                  norm_eval: bool = False,
-                 init_cfg: OptMultiConfig = None):
+                 init_cfg: OptMultiConfig = None,
+                 attention_cfg=None,
+                 spp_cfg=None,
+                 drop_block_cfg: ConfigType = None,
+                 use_spd_stem_layer: bool = False,
+                 use_cspnext_block: bool = False
+        ):
+        if act_cfg is None:
+            act_cfg = dict(type='SiLU', inplace=True)
+        if norm_cfg is None:
+            norm_cfg = dict(
+                type='BN', momentum=0.03, eps=0.001)
+        if spp_cfg is None:
+            spp_cfg = dict(
+                type='SPPFBottleneck', act_cfg=dict(type='SiLU'))
+        MODELS.register_module(module=nn.Hardswish)
+        MODELS.register_module(module=nn.Hardsigmoid)
         self.arch_settings[arch][-1][1] = last_stage_out_channels
+        self.attention_cfg = attention_cfg
+        self.spp_cfg = spp_cfg
+        self.drop_block_cfg = drop_block_cfg
+        self.use_spd_stem_layer = use_spd_stem_layer
+        self.use_cspnext_block = use_cspnext_block
         super().__init__(
             self.arch_settings[arch],
             deepen_factor,
@@ -236,8 +269,75 @@ class YOLOv8CSPDarknet(BaseBackbone):
             norm_eval=norm_eval,
             init_cfg=init_cfg)
 
+        # # asff stage123
+        # self.asff_1 = ASFF(level=0, multiplier=widen_factor * 0.5)
+        # self.asff_2 = ASFF(level=1, multiplier=widen_factor * 0.5)
+        # self.asff_3 = ASFF(level=2, multiplier=widen_factor * 0.5)
+
+        # # asff stage234
+        # self.asff_1 = ASFF(level=0, multiplier=widen_factor)
+        # self.asff_2 = ASFF(level=1, multiplier=widen_factor)
+        # self.asff_3 = ASFF(level=2, multiplier=widen_factor)
+
     def build_stem_layer(self) -> nn.Module:
         """Build a stem layer."""
+        # if self.use_spd_stem_layer:
+        #     layer = [
+        #         Focus(
+        #             3,
+        #             int(self.arch_setting[0][0] * self.widen_factor // 2),
+        #             norm_cfg=self.norm_cfg,
+        #             act_cfg=self.act_cfg),
+        #         ConvModule(
+        #             int(self.arch_setting[0][0] * self.widen_factor // 2),
+        #             int(self.arch_setting[0][0] * self.widen_factor),
+        #             3,
+        #             padding=1,
+        #             stride=1,
+        #             norm_cfg=self.norm_cfg,
+        #             act_cfg=self.act_cfg)
+        #     ]
+        #     if self.spp_cfg:
+        #         spp_cfg = self.spp_cfg.copy()
+        #         spp_cfg['in_channels'] = int(self.arch_setting[0][0] * self.widen_factor)
+        #         spp_cfg['out_channels'] = int(self.arch_setting[0][0] * self.widen_factor)
+        #         spp = MODELS.build(spp_cfg)
+        #         layer.append(spp)
+        #     if self.drop_block_cfg:
+        #         layer.append(MODELS.build(self.drop_block_cfg))
+        #
+        #     return nn.Sequential(*layer)
+        # else:
+        #     layer = [
+        #         ConvModule(
+        #             3,
+        #             int(self.arch_setting[0][0] * self.widen_factor // 2),
+        #             3,
+        #             padding=1,
+        #             stride=2,
+        #             norm_cfg=self.norm_cfg,
+        #             act_cfg=self.act_cfg),
+        #         ConvModule(
+        #             int(self.arch_setting[0][0] * self.widen_factor // 2),
+        #             int(self.arch_setting[0][0] * self.widen_factor // 2),
+        #             3,
+        #             padding=1,
+        #             stride=1,
+        #             norm_cfg=self.norm_cfg,
+        #             act_cfg=self.act_cfg),
+        #         ConvModule(
+        #             int(self.arch_setting[0][0] * self.widen_factor // 2),
+        #             int(self.arch_setting[0][0] * self.widen_factor),
+        #             3,
+        #             padding=1,
+        #             stride=1,
+        #             norm_cfg=self.norm_cfg,
+        #             act_cfg=self.act_cfg)
+        #     ]
+        #
+        # return nn.Sequential(*layer)
+
+        # original v8 stem layer.
         return ConvModule(
             self.input_channels,
             make_divisible(self.arch_setting[0][0], self.widen_factor),
@@ -256,6 +356,12 @@ class YOLOv8CSPDarknet(BaseBackbone):
         """
         in_channels, out_channels, num_blocks, add_identity, use_spp = setting
 
+        attention_cfg = self.attention_cfg
+        if self.attention_cfg and self.attention_cfg['type'] == 'MultiSpectralAttentionLayer':
+            attention_cfg = self.attention_cfg.copy()
+            attention_cfg['dct_h'] = self.fca_dct_settings[stage_idx]
+            attention_cfg['dct_w'] = attention_cfg['dct_h']
+
         in_channels = make_divisible(in_channels, self.widen_factor)
         out_channels = make_divisible(out_channels, self.widen_factor)
         num_blocks = make_round(num_blocks, self.deepen_factor)
@@ -269,22 +375,48 @@ class YOLOv8CSPDarknet(BaseBackbone):
             norm_cfg=self.norm_cfg,
             act_cfg=self.act_cfg)
         stage.append(conv_layer)
+
+        # spp is put at the end of stage 4 by default. here its position is moved prior to CSP Layer.
+        # if use_spp:
+        #     spp = SPPFBottleneck(
+        #         out_channels,
+        #         out_channels,
+        #         kernel_sizes=5,
+        #         norm_cfg=self.norm_cfg,
+        #         act_cfg=self.act_cfg)
+        #     stage.append(spp)
+
+        if use_spp:
+            spp_cfg = self.spp_cfg.copy()
+            spp_cfg['in_channels'] = out_channels
+            spp_cfg['out_channels'] = out_channels
+            spp = MODELS.build(spp_cfg)
+            stage.append(spp)
+
         csp_layer = CSPLayerWithTwoConv(
             out_channels,
             out_channels,
             num_blocks=num_blocks,
             add_identity=add_identity,
             norm_cfg=self.norm_cfg,
-            act_cfg=self.act_cfg)
+            act_cfg=self.act_cfg,
+            attention_cfg=attention_cfg,
+            use_cspnext_block=self.use_cspnext_block
+        )
         stage.append(csp_layer)
-        if use_spp:
-            spp = SPPFBottleneck(
-                out_channels,
-                out_channels,
-                kernel_sizes=5,
-                norm_cfg=self.norm_cfg,
-                act_cfg=self.act_cfg)
-            stage.append(spp)
+
+        # if use_spp:
+        #     spp = SPPFBottleneck(
+        #         out_channels,
+        #         out_channels,
+        #         kernel_sizes=5,
+        #         norm_cfg=self.norm_cfg,
+        #         act_cfg=self.act_cfg)
+        #     stage.append(spp)
+
+        if self.drop_block_cfg and stage_idx != (len(self.arch_setting) - 1):
+            stage.append(MODELS.build(self.drop_block_cfg))
+
         return stage
 
     def init_weights(self):
@@ -297,6 +429,23 @@ class YOLOv8CSPDarknet(BaseBackbone):
                     m.reset_parameters()
         else:
             super().init_weights()
+
+    def forward(self, x: torch.Tensor) -> tuple:
+        """Forward batch_inputs from the data_preprocessor."""
+        outs = []
+        for i, layer_name in enumerate(self.layers):
+            layer = getattr(self, layer_name)
+            x = layer(x)
+            if i in self.out_indices:
+                outs.append(x)
+
+        # # asff
+        # pan_out0 = self.asff_1(outs)
+        # pan_out1 = self.asff_2(outs)
+        # pan_out2 = self.asff_3(outs)
+        # outs = (pan_out2, pan_out1, pan_out0)
+
+        return tuple(outs)
 
 
 @MODELS.register_module()
