@@ -2,13 +2,13 @@
 from typing import List, Union
 
 import torch.nn as nn
+from mmcv.cnn import ConvModule
 from mmdet.utils import ConfigType, OptMultiConfig
 
 from mmyolo.registry import MODELS
 from .. import CSPLayerWithTwoConv
 from ..utils import make_divisible, make_round
 from .yolov5_pafpn import YOLOv5PAFPN
-
 
 @MODELS.register_module()
 class YOLOv8PAFPN(YOLOv5PAFPN):
@@ -31,6 +31,10 @@ class YOLOv8PAFPN(YOLOv5PAFPN):
             Defaults to None.
     """
 
+    # FCA attention
+    fca_dct_settings = [56, 28, 14, 7] # default
+    # fca_dct_settings = [238, 119, 59, 29]
+
     def __init__(self,
                  in_channels: List[int],
                  out_channels: Union[List[int], int],
@@ -41,7 +45,12 @@ class YOLOv8PAFPN(YOLOv5PAFPN):
                  norm_cfg: ConfigType = dict(
                      type='BN', momentum=0.03, eps=0.001),
                  act_cfg: ConfigType = dict(type='SiLU', inplace=True),
-                 init_cfg: OptMultiConfig = None):
+                 init_cfg: OptMultiConfig = None,
+                 attention_cfg: ConfigType = None,
+                 use_cspnext_block: bool = False
+                 ):
+        self.attention_cfg = attention_cfg
+        self.use_cspnext_block = use_cspnext_block
         super().__init__(
             in_channels=in_channels,
             out_channels=out_channels,
@@ -52,6 +61,7 @@ class YOLOv8PAFPN(YOLOv5PAFPN):
             norm_cfg=norm_cfg,
             act_cfg=act_cfg,
             init_cfg=init_cfg)
+
 
     def build_reduce_layer(self, idx: int) -> nn.Module:
         """build reduce layer.
@@ -73,6 +83,12 @@ class YOLOv8PAFPN(YOLOv5PAFPN):
         Returns:
             nn.Module: The top down layer.
         """
+        attention_cfg = self.attention_cfg
+        if self.attention_cfg and self.attention_cfg['type'] == 'MultiSpectralAttentionLayer':
+            attention_cfg = self.attention_cfg.copy()
+            attention_cfg['dct_h'] = self.fca_dct_settings[idx]
+            attention_cfg['dct_w'] = attention_cfg['dct_h']
+
         return CSPLayerWithTwoConv(
             make_divisible((self.in_channels[idx - 1] + self.in_channels[idx]),
                            self.widen_factor),
@@ -80,7 +96,9 @@ class YOLOv8PAFPN(YOLOv5PAFPN):
             num_blocks=make_round(self.num_csp_blocks, self.deepen_factor),
             add_identity=False,
             norm_cfg=self.norm_cfg,
-            act_cfg=self.act_cfg)
+            act_cfg=self.act_cfg,
+            attention_cfg=attention_cfg,
+            use_cspnext_block=self.use_cspnext_block)
 
     def build_bottom_up_layer(self, idx: int) -> nn.Module:
         """build bottom up layer.
@@ -91,6 +109,12 @@ class YOLOv8PAFPN(YOLOv5PAFPN):
         Returns:
             nn.Module: The bottom up layer.
         """
+        attention_cfg = self.attention_cfg
+        if self.attention_cfg and self.attention_cfg['type'] == 'MultiSpectralAttentionLayer':
+            attention_cfg = self.attention_cfg.copy()
+            attention_cfg['dct_h'] = self.fca_dct_settings[idx]
+            attention_cfg['dct_w'] = attention_cfg['dct_h']
+
         return CSPLayerWithTwoConv(
             make_divisible(
                 (self.out_channels[idx] + self.out_channels[idx + 1]),
@@ -99,4 +123,27 @@ class YOLOv8PAFPN(YOLOv5PAFPN):
             num_blocks=make_round(self.num_csp_blocks, self.deepen_factor),
             add_identity=False,
             norm_cfg=self.norm_cfg,
-            act_cfg=self.act_cfg)
+            act_cfg=self.act_cfg,
+            attention_cfg=attention_cfg,
+            use_cspnext_block=self.use_cspnext_block
+        )
+
+    # def build_out_layer(self, idx: int) -> nn.Module:
+    #     """build out layer.
+    #
+    #     Args:
+    #         idx (int): layer idx.
+    #
+    #     Returns:
+    #         nn.Module: The out layer.
+    #     """
+    #     if idx == 0:
+    #         return ConvModule(
+    #             make_divisible(self.in_channels[idx], self.widen_factor),
+    #             make_divisible(self.out_channels[idx], self.widen_factor),
+    #             3,
+    #             padding=1,
+    #             norm_cfg=self.norm_cfg,
+    #             act_cfg=self.act_cfg)
+    #     else:
+    #         return nn.Identity()
